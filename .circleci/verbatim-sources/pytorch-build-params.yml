@@ -44,6 +44,9 @@ pytorch_ios_params: &pytorch_ios_params
 
 pytorch_windows_params: &pytorch_windows_params
   parameters:
+    executor:
+      type: string
+      default: "windows-cpu-with-nvidia-cuda"
     test_name:
       type: string
       default: ""
