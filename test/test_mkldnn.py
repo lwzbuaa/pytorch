@@ -1,6 +1,7 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 import copy
 import unittest
+import numpy as np
 
 try:
     import torchvision
@@ -109,23 +110,48 @@ class TestMkldnn(TestCase):
             N = torch.randint(3, 10, (1,)).item()
             C = torch.randint(1, 3, (1,)).item() * groups
             M = torch.randint(1, 3, (1,)).item() * groups
-            x = torch.randn(N, C, 224, 224, dtype=torch.float32)
-            for bias in [True, False]:
-                conv2d = torch.nn.Conv2d(in_channels=C,
-                                         out_channels=M,
-                                         kernel_size=3,
-                                         stride=2,
-                                         padding=1,
-                                         bias=bias,
-                                         groups=groups).float()
-                mkldnn_conv2d = mkldnn_utils.to_mkldnn(copy.deepcopy(conv2d))
-                with torch.backends.mkldnn.flags(enabled=False):
-                    y_aten = conv2d(x)
-                y_mkldnn = mkldnn_conv2d(x.to_mkldnn()).to_dense()
-                self.assertEqual(y_aten, y_mkldnn)
+            x = torch.randn(N, C, 224, 224, dtype=torch.float32) * 10
+            for train in [True, False]:
+                for bias in [True, False]:
+                    conv2d = torch.nn.Conv2d(in_channels=C,
+                                             out_channels=M,
+                                             kernel_size=3,
+                                             stride=2,
+                                             padding=1,
+                                             bias=bias,
+                                             groups=groups).float()
+                x1 = x.clone()
+                x2 = x.clone().to_mkldnn()
+                if train:
+                    x1.requires_grad_()
+                    x2.requires_grad_()
+                    mkldnn_conv2d = copy.deepcopy(conv2d)
+                else:
+                    mkldnn_conv2d = mkldnn_utils.to_mkldnn(copy.deepcopy(conv2d))
 
-                self._test_serialization(mkldnn_conv2d, (x.to_mkldnn(),))
-                self._test_tracing(mkldnn_conv2d, (x.to_mkldnn(),))
+                with torch.backends.mkldnn.flags(enabled=False):
+                    y_aten = conv2d(x1)
+                    if train:
+                        loss1 = y_aten.sum()
+                        loss1.backward()
+
+                y_mkldnn = mkldnn_conv2d(x2).to_dense()
+
+                if train:
+                    loss2 = y_mkldnn.sum()
+                    loss2.backward()
+
+                np.testing.assert_allclose(
+                    y_aten.detach(), y_mkldnn.detach(), rtol=1e-5, atol=1e-5)
+                if train:
+                    self.assertEqual(x1.grad, x2.grad.to_dense())
+                    np.testing.assert_allclose(
+                        conv2d.weight.grad, mkldnn_conv2d.weight.grad, rtol=1e-3, atol=1e-3)
+                    if bias:
+                        self.assertEqual(conv2d.bias.grad, mkldnn_conv2d.bias.grad)
+                else:
+                    self._test_serialization(mkldnn_conv2d, (x.to_mkldnn(),))
+                    self._test_tracing(mkldnn_conv2d, (x.to_mkldnn(),))
 
     def test_conv2d_legacy_jit_model(self):
         """
